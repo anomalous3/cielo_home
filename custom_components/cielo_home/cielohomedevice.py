@@ -218,24 +218,23 @@ class CieloHomeDevice:
     ) -> None:
         msg = {
             "action": default_action,
+            "actionSource": "WEB",
+            "applianceType": self.get_appliance_type(),
             "macAddress": self.get_mac_address(),
             "deviceTypeVersion": self.get_device_type_version(),
             "fwVersion": self.get_fw_version(),
-            "actionSource": "WEB",
-            "applianceType": self.get_appliance_type(),
             "applianceId": self.get_appliance_id(),
-            "myRuleConfiguration": self.get_my_rule_configuration(),
             "connection_source": self._connection_source
             if self._force_connection_source
             else self.get_connection_source(),
             "user_id": self._user_id,
-            # "token": "",
-            "mid": "",
             "preset": 0,
-            "application_version": "1.2.0",
-            "ts": 0,
-            "actions": action,
             "oldPower": self._old_power,
+            "myRuleConfiguration": self.get_my_rule_configuration(),
+            "actions": action,
+            "mid": "",
+            "application_version": "1.3.2",
+            "ts": 0,
         }
 
         if default_action == "actionControl":
@@ -395,23 +394,27 @@ class CieloHomeDevice:
 
     def send_temperature(self, value) -> None:
         """None."""
-        actionValue = value
         temp = int(self._device["latestAction"]["temp"])
         if temp == int(value) and self.get_supportTargetTemp():
             return
 
-        if not self.get_supportTargetTemp():
+        if self.get_supportTargetTemp():
+            # For devices that support target temperature, send the actual temperature value
+            action = self._get_action()
+            action["temp"] = str(value)
+            self._device["latestAction"]["temp"] = action["temp"]
+            self._send_msg(action, "temp", str(value))
+        else:
+            # For devices that don't support target temperature, use inc/dec
             if temp < int(value):
                 actionValue = "inc"
-                value = int(value) - 1
             else:
                 actionValue = "dec"
-                value = int(value) + 1
-
-        action = self._get_action()
-        action["temp"] = str(value)
-        self._device["latestAction"]["temp"] = action["temp"]
-        self._send_msg(action, "temp", actionValue)
+            
+            action = self._get_action()
+            # Keep the current temp in actions (not the target temp)
+            action["temp"] = str(temp)
+            self._send_msg(action, "temp", actionValue)
 
     def send_temperatureUp(self) -> None:
         """None."""
