@@ -395,11 +395,17 @@ class CieloHomeDevice:
     def send_temperature(self, value) -> None:
         """None."""
         temp = int(self._device["latestAction"]["temp"])
-        if temp == int(value) and self.get_supportTargetTemp():
+        supports_target = self.get_supportTargetTemp()
+        
+        _LOGGER.debug(f"send_temperature called: current_temp={temp}, target_temp={value}, supports_target={supports_target}")
+        
+        if temp == int(value) and supports_target:
+            _LOGGER.debug("Temperature already at target, skipping")
             return
 
-        if self.get_supportTargetTemp():
+        if supports_target:
             # For devices that support target temperature, send the actual temperature value
+            _LOGGER.debug(f"Device supports target temp, sending direct value: {value}")
             action = self._get_action()
             action["temp"] = str(value)
             self._device["latestAction"]["temp"] = action["temp"]
@@ -411,9 +417,11 @@ class CieloHomeDevice:
             else:
                 actionValue = "dec"
             
+            _LOGGER.debug(f"Device uses inc/dec, sending actionValue={actionValue} (current={temp} -> target={value})")
             action = self._get_action()
             # Keep the current temp in actions (not the target temp)
             action["temp"] = str(temp)
+            _LOGGER.debug(f"Sending message with actionType=temp, actionValue={actionValue}, actions={action}")
             self._send_msg(action, "temp", actionValue)
 
     def send_temperatureUp(self) -> None:
