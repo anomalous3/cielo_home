@@ -237,14 +237,12 @@ class CieloHomeDevice:
             "ts": 0,
         }
 
-        if default_action == "actionControl" and not (overrides and overrides.get("skip_action_fields")):
+        if default_action == "actionControl":
             msg["actionType"] = action_type
             msg["actionValue"] = action_value
 
         if overrides:
-            # Remove our internal skip flag before merging
-            overrides_copy = {k: v for k, v in overrides.items() if k != "skip_action_fields"}
-            msg = {**msg, **overrides_copy}
+            msg = {**msg, **overrides}
 
         self._api.send_action(msg)
         # self._api.send_action(msg)
@@ -395,39 +393,40 @@ class CieloHomeDevice:
         self._send_msg(action, "swing", action["swing"])
 
     def send_temperature(self, value) -> None:
-        """None."""
+        """Send temperature change using inc/dec commands."""
         temp = int(self._device["latestAction"]["temp"])
-        supports_target = self.get_supportTargetTemp()
+        target_temp = int(value)
         
-        _LOGGER.debug(f"send_temperature called: current_temp={temp}, target_temp={value}, supports_target={supports_target}")
+        _LOGGER.debug(f"send_temperature called: current_temp={temp}, target_temp={target_temp}")
         
-        if temp == int(value) and supports_target:
+        if temp == target_temp:
             _LOGGER.debug("Temperature already at target, skipping")
             return
 
-        if supports_target:
-            # For devices that support target temperature, send the target value directly
-            _LOGGER.debug(f"Device supports target temp, sending direct target: {value}")
-            action = self._get_action()
-            action["temp"] = str(value)
-            self._device["latestAction"]["temp"] = str(value)
-            
-            # For target temperature, send actionControl but skip actionType/actionValue
-            _LOGGER.debug(f"Sending direct temperature with actions: {action}")
-            self._send_msg(action, "", "", overrides={"skip_action_fields": True})
-        else:
-            # For devices that don't support target temperature, use inc/dec
-            if temp < int(value):
+        # Always use inc/dec method since that's what the web interface uses
+        current_temp = temp
+        
+        # Send inc/dec commands one at a time to reach the target
+        while current_temp != target_temp:
+            if current_temp < target_temp:
                 actionValue = "inc"
+                current_temp += 1
             else:
                 actionValue = "dec"
+                current_temp -= 1
             
-            _LOGGER.debug(f"Device uses inc/dec, sending actionValue={actionValue} (current={temp} -> target={value})")
+            _LOGGER.debug(f"Sending {actionValue} command: {temp} -> {current_temp}")
+            
             action = self._get_action()
-            # Keep the current temp in actions (not the target temp)
-            action["temp"] = str(temp)
-            _LOGGER.debug(f"Sending message with actionType=temp, actionValue={actionValue}, actions={action}")
+            # Use the current temperature before the change
+            action["temp"] = str(temp if actionValue == "inc" else temp)
             self._send_msg(action, "temp", actionValue)
+            
+            # Update our tracking of the current temp
+            temp = current_temp
+        
+        # Update the device state to reflect the final temperature
+        self._device["latestAction"]["temp"] = str(target_temp)
 
     def send_temperatureUp(self) -> None:
         """None."""
