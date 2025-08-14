@@ -516,10 +516,13 @@ class CieloHomeDevice:
 
     def get_supportTargetTemp(self) -> bool:
         """None."""
-        if self._device["appliance"]["temp"] == "inc:dec":
-            return False
-        else:
-            return True
+        # Force all devices to use inc/dec method for reliable temperature control
+        return False
+        # Original logic (commented out):
+        # if self._device["appliance"]["temp"] == "inc:dec":
+        #     return False
+        # else:
+        #     return True
 
     def get_range_temp(self) -> str:
         """None."""
