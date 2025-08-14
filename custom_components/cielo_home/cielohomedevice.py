@@ -237,12 +237,14 @@ class CieloHomeDevice:
             "ts": 0,
         }
 
-        if default_action == "actionControl":
+        if default_action == "actionControl" and not (overrides and overrides.get("skip_action_fields")):
             msg["actionType"] = action_type
             msg["actionValue"] = action_value
 
         if overrides:
-            msg = {**msg, **overrides}
+            # Remove our internal skip flag before merging
+            overrides_copy = {k: v for k, v in overrides.items() if k != "skip_action_fields"}
+            msg = {**msg, **overrides_copy}
 
         self._api.send_action(msg)
         # self._api.send_action(msg)
@@ -404,27 +406,15 @@ class CieloHomeDevice:
             return
 
         if supports_target:
-            # For devices that support target temperature, use inc/dec to reach target
-            _LOGGER.debug(f"Device supports target temp, using inc/dec to reach: {value}")
-            current_temp = temp
-            target_temp = int(value)
+            # For devices that support target temperature, send the target value directly
+            _LOGGER.debug(f"Device supports target temp, sending direct target: {value}")
+            action = self._get_action()
+            action["temp"] = str(value)
+            self._device["latestAction"]["temp"] = str(value)
             
-            # Send inc/dec commands to reach the target temperature
-            while current_temp != target_temp:
-                if current_temp < target_temp:
-                    actionValue = "inc"
-                    current_temp += 1
-                else:
-                    actionValue = "dec" 
-                    current_temp -= 1
-                
-                action = self._get_action()
-                action["temp"] = str(current_temp - (1 if actionValue == "inc" else -1))  # Use current temp before increment
-                _LOGGER.debug(f"Sending {actionValue} to reach target (step {current_temp-1} -> {current_temp})")
-                self._send_msg(action, "temp", actionValue)
-            
-            # Update the device state to the final temperature
-            self._device["latestAction"]["temp"] = str(target_temp)
+            # For target temperature, send actionControl but skip actionType/actionValue
+            _LOGGER.debug(f"Sending direct temperature with actions: {action}")
+            self._send_msg(action, "", "", overrides={"skip_action_fields": True})
         else:
             # For devices that don't support target temperature, use inc/dec
             if temp < int(value):
