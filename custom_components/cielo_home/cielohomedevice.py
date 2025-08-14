@@ -404,12 +404,27 @@ class CieloHomeDevice:
             return
 
         if supports_target:
-            # For devices that support target temperature, send the actual temperature value
-            _LOGGER.debug(f"Device supports target temp, sending direct value: {value}")
-            action = self._get_action()
-            action["temp"] = str(value)
-            self._device["latestAction"]["temp"] = action["temp"]
-            self._send_msg(action, "temp", str(value))
+            # For devices that support target temperature, use inc/dec to reach target
+            _LOGGER.debug(f"Device supports target temp, using inc/dec to reach: {value}")
+            current_temp = temp
+            target_temp = int(value)
+            
+            # Send inc/dec commands to reach the target temperature
+            while current_temp != target_temp:
+                if current_temp < target_temp:
+                    actionValue = "inc"
+                    current_temp += 1
+                else:
+                    actionValue = "dec" 
+                    current_temp -= 1
+                
+                action = self._get_action()
+                action["temp"] = str(current_temp - (1 if actionValue == "inc" else -1))  # Use current temp before increment
+                _LOGGER.debug(f"Sending {actionValue} to reach target (step {current_temp-1} -> {current_temp})")
+                self._send_msg(action, "temp", actionValue)
+            
+            # Update the device state to the final temperature
+            self._device["latestAction"]["temp"] = str(target_temp)
         else:
             # For devices that don't support target temperature, use inc/dec
             if temp < int(value):
@@ -516,13 +531,10 @@ class CieloHomeDevice:
 
     def get_supportTargetTemp(self) -> bool:
         """None."""
-        # Force all devices to use inc/dec method for reliable temperature control
-        return False
-        # Original logic (commented out):
-        # if self._device["appliance"]["temp"] == "inc:dec":
-        #     return False
-        # else:
-        #     return True
+        if self._device["appliance"]["temp"] == "inc:dec":
+            return False
+        else:
+            return True
 
     def get_range_temp(self) -> str:
         """None."""
