@@ -78,6 +78,8 @@ class CieloHomeDevice:
         self._waiting_for_temp_update = False
         self._expected_temp = None
         self._suppress_intermediate_updates = False
+        self._temp_command_lock = Lock()
+        self._ignore_state_updates_until = 0
         # try:
         #    self._device["appliance"]["swing"] = ""
         #     self._device["appliance"]["fan"] = ""
@@ -418,66 +420,80 @@ class CieloHomeDevice:
 
     def send_temperature(self, value) -> None:
         """Send temperature change using inc/dec commands with delays."""
-        temp = int(self._device["latestAction"]["temp"])
-        target_temp = int(value)
-        
-        _LOGGER.debug(f"send_temperature called: current_temp={temp}, target_temp={target_temp}")
-        
-        if temp == target_temp:
-            _LOGGER.debug("Temperature already at target, skipping")
+        # Prevent overlapping temperature commands
+        if not self._temp_command_lock.acquire(blocking=False):
+            _LOGGER.warning(f"🚫 Temperature command blocked - another command in progress")
             return
-
-        # For multi-step changes, suppress intermediate UI updates
-        is_multi_step = abs(target_temp - temp) > 1
-        if is_multi_step:
-            _LOGGER.debug("Multi-step change detected, suppressing intermediate updates")
-            self._suppress_intermediate_updates = True
-
+        
         try:
-            # Always use inc/dec method since that's what the web interface uses
-            current_temp = temp
+            temp = int(self._device["latestAction"]["temp"])
+            target_temp = int(value)
             
-            # Send all inc/dec commands with delays
-            while current_temp != target_temp:
-                if current_temp < target_temp:
-                    actionValue = "inc"
-                    current_temp += 1
-                else:
-                    actionValue = "dec"
-                    current_temp -= 1
-                
-                _LOGGER.debug(f"Sending {actionValue} command: {temp} -> {current_temp}")
-                
-                action = self._get_action()
-                # Use the temperature before the change
-                action["temp"] = str(temp)
-                self._send_msg(action, "temp", actionValue)
-                
-                # Update our tracking
-                temp = current_temp
-                
-                # Small delay between commands
-                time.sleep(0.5)
+            _LOGGER.debug(f"🎯 send_temperature called: current_temp={temp}, target_temp={target_temp}")
             
-            # Re-enable updates before waiting for final confirmation
+            if temp == target_temp:
+                _LOGGER.debug("Temperature already at target, skipping")
+                return
+
+            # For multi-step changes, suppress intermediate UI updates
+            is_multi_step = abs(target_temp - temp) > 1
             if is_multi_step:
-                _LOGGER.debug("Commands sent, re-enabling updates for final confirmation")
+                _LOGGER.debug("Multi-step change detected, suppressing intermediate updates")
+                self._suppress_intermediate_updates = True
+
+            try:
+                # Always use inc/dec method since that's what the web interface uses
+                current_temp = temp
+                
+                # Send all inc/dec commands with delays
+                while current_temp != target_temp:
+                    if current_temp < target_temp:
+                        actionValue = "inc"
+                        current_temp += 1
+                    else:
+                        actionValue = "dec"
+                        current_temp -= 1
+                    
+                    _LOGGER.debug(f"Sending {actionValue} command: {temp} -> {current_temp}")
+                    
+                    action = self._get_action()
+                    # Use the temperature before the change
+                    action["temp"] = str(temp)
+                    self._send_msg(action, "temp", actionValue)
+                    
+                    # Update our tracking
+                    temp = current_temp
+                    
+                    # Small delay between commands
+                    time.sleep(0.5)
+                
+                # Re-enable updates before waiting for final confirmation
+                if is_multi_step:
+                    _LOGGER.debug("Commands sent, re-enabling updates for final confirmation")
+                    self._suppress_intermediate_updates = False
+                
+                # Wait for the final state update to confirm we reached the target
+                _LOGGER.debug(f"Waiting for final temperature confirmation: {target_temp}")
+                if self._wait_for_temp_update(target_temp, timeout=5.0):
+                    _LOGGER.debug(f"Final temperature confirmed: {target_temp}")
+                else:
+                    _LOGGER.warning(f"Timeout waiting for final temperature: {target_temp}")
+                
+            finally:
+                # Ensure suppression is disabled
                 self._suppress_intermediate_updates = False
             
-            # Wait for the final state update to confirm we reached the target
-            _LOGGER.debug(f"Waiting for final temperature confirmation: {target_temp}")
-            if self._wait_for_temp_update(target_temp, timeout=5.0):
-                _LOGGER.debug(f"Final temperature confirmed: {target_temp}")
-            else:
-                _LOGGER.warning(f"Timeout waiting for final temperature: {target_temp}")
+            # Update the device state to reflect the final temperature
+            _LOGGER.debug(f"🎯 Setting final device temperature to: {target_temp}")
+            self._device["latestAction"]["temp"] = str(target_temp)
+            
+            # Ignore StateUpdates for 3 seconds after setting final temperature
+            self._ignore_state_updates_until = time.time() + 3.0
+            _LOGGER.debug(f"🕒 Ignoring StateUpdates until {self._ignore_state_updates_until}")
             
         finally:
-            # Ensure suppression is disabled
-            self._suppress_intermediate_updates = False
-        
-        # Update the device state to reflect the final temperature
-        _LOGGER.debug(f"🎯 Setting final device temperature to: {target_temp}")
-        self._device["latestAction"]["temp"] = str(target_temp)
+            # Release the temperature command lock
+            self._temp_command_lock.release()
 
     def send_temperatureUp(self) -> None:
         """None."""
@@ -1033,6 +1049,13 @@ class CieloHomeDevice:
             # Check if this is the temperature update we're waiting for
             old_temp = self._device["latestAction"]["temp"]
             new_temp = data["action"]["temp"]
+            
+            # Check if we should ignore this StateUpdate (delayed response)
+            current_time = time.time()
+            if current_time < self._ignore_state_updates_until:
+                _LOGGER.debug(f"⏰ Ignoring delayed StateUpdate: {old_temp} -> {new_temp} "
+                             f"(ignoring until {self._ignore_state_updates_until}, now={current_time})")
+                return
             
             # Log ALL temperature state updates with detailed info
             _LOGGER.debug(f"StateUpdate received: {old_temp} -> {new_temp}, "
