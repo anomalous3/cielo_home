@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import logging
 import sys
-from threading import Lock, Timer
+from threading import Event, Lock, Timer
 import time
 
 from homeassistant.components.climate import HVACMode
@@ -72,6 +72,11 @@ class CieloHomeDevice:
         self._connection_source = 1 if connection_source else 0
         self._user_id = user_id
         self._old_power = self._device["latestAction"]["power"]
+        
+        # State update waiting mechanism
+        self._state_update_event = Event()
+        self._waiting_for_temp_update = False
+        self._expected_temp = None
         # try:
         #    self._device["appliance"]["swing"] = ""
         #     self._device["appliance"]["fan"] = ""
@@ -392,8 +397,26 @@ class CieloHomeDevice:
         self._device["latestAction"]["swing"] = value
         self._send_msg(action, "swing", action["swing"])
 
+    def _wait_for_temp_update(self, expected_temp: int, timeout: float = 5.0) -> bool:
+        """Wait for a temperature state update with timeout."""
+        self._state_update_event.clear()
+        self._waiting_for_temp_update = True
+        self._expected_temp = expected_temp
+        
+        _LOGGER.debug(f"Waiting for temp update to {expected_temp} (timeout={timeout}s)")
+        
+        # Wait for the event to be set or timeout
+        if self._state_update_event.wait(timeout):
+            _LOGGER.debug(f"Successfully received temp update to {expected_temp}")
+            return True
+        else:
+            _LOGGER.warning(f"Timeout waiting for temp update to {expected_temp}")
+            self._waiting_for_temp_update = False
+            self._expected_temp = None
+            return False
+
     def send_temperature(self, value) -> None:
-        """Send temperature change using inc/dec commands."""
+        """Send temperature change using inc/dec commands with response waiting."""
         temp = int(self._device["latestAction"]["temp"])
         target_temp = int(value)
         
@@ -406,27 +429,32 @@ class CieloHomeDevice:
         # Always use inc/dec method since that's what the web interface uses
         current_temp = temp
         
-        # Send inc/dec commands one at a time to reach the target
+        # Send inc/dec commands one at a time, waiting for confirmation
         while current_temp != target_temp:
             if current_temp < target_temp:
                 actionValue = "inc"
-                current_temp += 1
+                expected_temp = current_temp + 1
             else:
                 actionValue = "dec"
-                current_temp -= 1
+                expected_temp = current_temp - 1
             
-            _LOGGER.debug(f"Sending {actionValue} command: {temp} -> {current_temp}")
+            _LOGGER.debug(f"Sending {actionValue} command: {current_temp} -> {expected_temp}")
             
             action = self._get_action()
             # Use the current temperature before the change
-            action["temp"] = str(temp if actionValue == "inc" else temp)
+            action["temp"] = str(current_temp)
             self._send_msg(action, "temp", actionValue)
             
-            # Update our tracking of the current temp
-            temp = current_temp
+            # Wait for the state update confirming the temperature change
+            if self._wait_for_temp_update(expected_temp, timeout=3.0):
+                current_temp = expected_temp
+                _LOGGER.debug(f"Temperature step confirmed: {current_temp}")
+            else:
+                _LOGGER.warning(f"Temperature step failed or timed out, stopping at {current_temp}")
+                break
         
-        # Update the device state to reflect the final temperature
-        self._device["latestAction"]["temp"] = str(target_temp)
+        # Update the device state to reflect the final temperature (in case of timeout)
+        self._device["latestAction"]["temp"] = str(current_temp)
 
     def send_temperatureUp(self) -> None:
         """None."""
@@ -978,8 +1006,22 @@ class CieloHomeDevice:
                 self._device["deviceStatus"] = 1
             else:
                 self._device["deviceStatus"] = data["device_status"]
-            self._device["latestAction"]["temp"] = data["action"]["temp"]
+            
+            # Check if this is the temperature update we're waiting for
+            old_temp = self._device["latestAction"]["temp"]
+            new_temp = data["action"]["temp"]
+            self._device["latestAction"]["temp"] = new_temp
             self._device["latestAction"]["fanspeed"] = data["action"]["fanspeed"]
+            
+            # Signal if we got the expected temperature update
+            if self._waiting_for_temp_update and self._expected_temp is not None:
+                if str(new_temp) == str(self._expected_temp):
+                    _LOGGER.debug(f"Received expected temp update: {old_temp} -> {new_temp}")
+                    self._waiting_for_temp_update = False
+                    self._expected_temp = None
+                    self._state_update_event.set()
+                else:
+                    _LOGGER.debug(f"Received temp update {old_temp} -> {new_temp}, but waiting for {self._expected_temp}")
             self._device["latestAction"]["mode"] = data["action"]["mode"]
             self._device["latestAction"]["power"] = data["action"]["power"]
             self._old_power = self._device["latestAction"]["power"]
