@@ -476,6 +476,7 @@ class CieloHomeDevice:
             self._suppress_intermediate_updates = False
         
         # Update the device state to reflect the final temperature
+        _LOGGER.debug(f"🎯 Setting final device temperature to: {target_temp}")
         self._device["latestAction"]["temp"] = str(target_temp)
 
     def send_temperatureUp(self) -> None:
@@ -1032,23 +1033,32 @@ class CieloHomeDevice:
             # Check if this is the temperature update we're waiting for
             old_temp = self._device["latestAction"]["temp"]
             new_temp = data["action"]["temp"]
+            
+            # Log ALL temperature state updates with detailed info
+            _LOGGER.debug(f"StateUpdate received: {old_temp} -> {new_temp}, "
+                         f"waiting_for={self._expected_temp}, "
+                         f"suppressed={self._suppress_intermediate_updates}, "
+                         f"timestamp={data.get('ts', 'unknown')}")
+            
             self._device["latestAction"]["temp"] = new_temp
             self._device["latestAction"]["fanspeed"] = data["action"]["fanspeed"]
             
             # Signal if we got the expected temperature update
             if self._waiting_for_temp_update and self._expected_temp is not None:
                 if str(new_temp) == str(self._expected_temp):
-                    _LOGGER.debug(f"Received expected temp update: {old_temp} -> {new_temp}")
+                    _LOGGER.debug(f"✅ Received expected temp update: {old_temp} -> {new_temp}")
                     self._waiting_for_temp_update = False
                     self._expected_temp = None
                     self._state_update_event.set()
                 else:
-                    _LOGGER.debug(f"Received temp update {old_temp} -> {new_temp}, but waiting for {self._expected_temp}")
+                    _LOGGER.debug(f"⏳ Received temp update {old_temp} -> {new_temp}, but waiting for {self._expected_temp}")
             
             # Don't trigger state updates during multi-command temperature changes
             if self._suppress_intermediate_updates:
-                _LOGGER.debug(f"Suppressing intermediate update: {old_temp} -> {new_temp}")
+                _LOGGER.debug(f"🚫 Suppressing intermediate update: {old_temp} -> {new_temp}")
                 return
+            
+            _LOGGER.debug(f"🔄 Processing state update: {old_temp} -> {new_temp}")
             self._device["latestAction"]["mode"] = data["action"]["mode"]
             self._device["latestAction"]["power"] = data["action"]["power"]
             self._old_power = self._device["latestAction"]["power"]
